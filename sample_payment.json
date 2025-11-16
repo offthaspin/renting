@@ -1,0 +1,19 @@
+{
+  "Body": {
+    "stkCallback": {
+      "MerchantRequestID": "12345",
+      "CheckoutRequestID": "67890",
+      "ResultCode": 0,
+      "ResultDesc": "The service request is processed successfully.",
+      "CallbackMetadata": {
+        "Item": [
+          {"Name":"Amount","Value":10000},
+          {"Name":"MpesaReceiptNumber","Value":"ABC123XYZ"},
+          {"Name":"TransactionDate","Value":"20251021T120102"},
+          {"Name":"PhoneNumber","Value":"254712345678"},
+          {"Name":"AccountReference","Value":"7939296#1"}
+        ]
+      }
+    }
+  }
+}

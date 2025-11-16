@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container mt-5" style="max-width:600px;">
+  <h3 class="mb-4 text-center">💳 Payment Settings</h3>
+
+  <form method="POST">
+    <div class="form-group mb-3">
+      <label for="payment_method">Payment Method</label>
+      <select class="form-control" name="payment_method" id="payment_method" required>
+        <option value="">Select...</option>
+        <option value="Paybill" {% if settings and settings.payment_method == 'Paybill' %}selected{% endif %}>Paybill</option>
+        <option value="Till Number" {% if settings and settings.payment_method == 'Till Number' %}selected{% endif %}>Buy Goods (Till)</option>
+        <option value="Send Money" {% if settings and settings.payment_method == 'Send Money' %}selected{% endif %}>Send Money</option>
+      </select>
+    </div>
+
+    <div class="form-group mb-3">
+      <label for="account_number">Paybill/Till/Phone Number</label>
+      <input type="text" class="form-control" name="account_number" id="account_number"
+             value="{% if settings %}{% if settings.payment_method == 'Paybill' %}{{ settings.paybill_number }}{% elif settings.payment_method == 'Till Number' %}{{ settings.till_number }}{% elif settings.payment_method == 'Send Money' %}{{ settings.send_money_number }}{% endif %}{% endif %}"
+             placeholder="Enter your number" required>
+    </div>
+
+    <div class="form-group mb-4">
+      <label for="pay_name">Account or Name (optional)</label>
+      <input type="text" class="form-control" name="pay_name" id="pay_name"
+             value="{{ settings.phone_number if settings else '' }}">
+    </div>
+
+    <button type="submit" class="btn btn-primary w-100">Save Settings</button>
+  </form>
+</div>
+
+<script>
+  const paymentSelect = document.getElementById('payment_method');
+  const accountInput = document.getElementById('account_number');
+
+  // Saved numbers from backend
+  const savedNumbers = {
+    'Paybill': '{{ settings.paybill_number if settings else "" }}',
+    'Till Number': '{{ settings.till_number if settings else "" }}',
+    'Send Money': '{{ settings.send_money_number if settings else "" }}'
+  };
+
+  paymentSelect.addEventListener('change', () => {
+    const selected = paymentSelect.value;
+    
+    // update placeholder
+    if(selected === 'Paybill') {
+      accountInput.placeholder = 'Enter Paybill Number';
+    } else if(selected === 'Till Number') {
+      accountInput.placeholder = 'Enter Till Number';
+    } else if(selected === 'Send Money') {
+      accountInput.placeholder = 'Enter Phone Number';
+    } else {
+      accountInput.placeholder = '';
+    }
+  });
+</script>
+{% endblock %}

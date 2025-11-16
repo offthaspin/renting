@@ -1,0 +1,18 @@
+# Environment & secrets
+.env
+.env.*
+*.env
+
+# Databases (if you don't want them in git)
+*.db
+*.sqlite
+*.sqlite3
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Logs & backups
+*.log
+backup/
+

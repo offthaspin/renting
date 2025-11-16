@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}Tenants{% endblock %}
+
+{% block content %}
+<div class="glass" style="padding: 24px; margin: 32px;">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Tenant List</h2>
+    <a href="{{ url_for('tenant_add') }}" class="btn btn-primary">➕ Add Tenant</a>
+  </div>
+
+  <form method="GET" action="{{ url_for('tenant_list') }}" class="mb-4">
+    <div class="input-group">
+      <input type="text" name="q" class="form-control" placeholder="Search tenant..."
+             value="{{ query or '' }}">
+      <button class="btn btn-outline-secondary" type="submit">🔍</button>
+    </div>
+  </form>
+
+  {% if tenants %}
+  <div style="overflow-x:auto;">
+    <table class="table table-hover align-middle table-bordered text-center" style="width:100%;">
+      <thead class="table-dark">
+        <tr>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>National ID</th>
+          <th>House No</th>
+          <th>Monthly Rent (Ksh)</th>
+          <th>Total Paid</th>
+          <th>Balance</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for tenant in tenants %}
+        <tr>
+          <td>{{ tenant.name }}</td>
+          <td>{{ tenant.phone }}</td>
+          <td>{{ tenant.national_id or '-' }}</td>
+          <td>{{ tenant.house_no }}</td>
+          <td>{{ "%.2f"|format(tenant.monthly_rent or 0) }}</td>
+          <td>{{ "%.2f"|format(tenant.total_paid()) }}</td>
+          <td>
+            {% set bal = tenant.balance %}
+            <span class="{% if tenant.balance < 0 %}text-danger{% else %}text-success{% endif %}">
+                {{ tenant.formatted_balance() }}
+            </span>
+
+          </td>
+          <td>
+
+            <a href="{{ url_for('payment_add', tenant_id=tenant.id) }}" class="btn btn-sm btn-outline-success">💰 Pay</a>
+            <form action="{{ url_for('tenant_delete', tenant_id=tenant.id) }}" method="POST" style="display:inline;"
+                  onsubmit="return confirm('Delete this tenant?');">
+              <button type="submit" class="btn btn-sm btn-outline-danger">🗑</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="mt-4 text-center">No tenants found.
+    <a href="{{ url_for('tenant_add') }}">Add one now</a>.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

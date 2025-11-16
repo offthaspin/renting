@@ -1,0 +1,13 @@
+Flask==3.1.0
+Flask-Cors==6.0.1
+Flask-Login==0.6.3
+Flask-SQLAlchemy==3.1.1
+gunicorn==23.0.0
+requests==2.32.3
+python-dotenv==1.0.1
+twilio==9.2.3
+mysql-connector-python==9.0.0
+python-dateutil
+
+\nreportlab==4.0.0
+africastalking==2.2.0

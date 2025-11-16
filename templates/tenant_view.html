@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block title %}{{ tenant.name }} · Rentana{% endblock %}
+{% block content %}
+  <h1>{{ tenant.name }}</h1>
+  <ul class="tenant-details">
+    <li><strong>Phone:</strong> {{ tenant.phone }}</li>
+    <li><strong>ID:</strong> {{ tenant.national_id }}</li>
+    <li><strong>House No:</strong> {{ tenant.house_number }}</li>
+    <li><strong>Monthly Rent:</strong> {{ tenant.monthly_rent }}</li>
+    <li><strong>Balance:</strong> {{ tenant.balance }}</li>
+  </ul>
+
+  <div class="card">
+    <h3>Payment History</h3>
+    <ul class="history-list">
+      {% for p in tenant.payments|sort(attribute='date', reverse=true) %}
+        <li>{{ p.date.strftime('%Y-%m-%d %H:%M') }} &mdash; {{ p.amount }} {{ p.note and '(' ~ p.note ~ ')' }}</li>
+      {% endfor %}
+      {% if not tenant.payments %}
+        <li>No payments yet.</li>
+      {% endif %}
+    </ul>
+  </div>
+
+  <div class="card">
+    <h3>Record Payment</h3>
+    <form method="post" action="{{ url_for('add_payment') }}">
+      <input type="hidden" name="tenant_id" value="{{ tenant.id }}">
+      <label>Amount</label>
+      <input type="number" step="0.01" name="amount" required>
+      <label>Note (optional)</label>
+      <input type="text" name="note">
+      <button type="submit">Submit Payment</button>
+    </form>
+  </div>
+
+  <a class="btn" href="{{ url_for('dashboard') }}">← Back to Dashboard</a>
+{% endblock %}

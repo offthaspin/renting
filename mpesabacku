@@ -1,0 +1,540 @@
+"""
+mpesa_handler.py — FINAL (strict idempotency + Daraja auto-verify + Twilio SMS if configured)
+
+Behavior:
+  • STRICT idempotency: transaction_id column is UNIQUE; duplicates are rejected.
+  • Auto-verify: calls Safaricom Daraja transaction status endpoint to confirm a payment before persisting.
+  • Twilio: sends SMS only when TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM are present.
+  • Logs to mpesa.log in same folder.
+
+IMPORTANT:
+  - Test on Daraja **sandbox** before switching to production.
+  - Provide appropriate env vars (see README below).
+"""
+
+import os
+import sqlite3
+import traceback
+import logging
+import base64
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional, Dict
+from psycopg2 import IntegrityError
+
+import requests
+from flask import Blueprint, request, jsonify, abort
+
+
+# mpesa_handler.py (near other imports)
+from decimal import Decimal, InvalidOperation
+import logging
+
+logger = logging.getLogger(__name__)
+
+# -------- Logging --------
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+LOG_FILE = os.path.join(BASE_DIR, "mpesa.log")
+logging.basicConfig(
+    filename=LOG_FILE,
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+# -------- Optional libs --------
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    REPORTLAB_AVAILABLE = True
+except Exception:
+    REPORTLAB_AVAILABLE = False
+
+try:
+    from twilio.rest import Client as TwilioClient
+    TWILIO_AVAILABLE = True
+except Exception:
+    TWILIO_AVAILABLE = False
+    #normal
+def _normalize_msisdn(msisdn):
+    if not msisdn:
+        return None
+    s = str(msisdn).strip()
+    if s.startswith("+"):
+        s = s[1:]
+    if s.startswith("254") and len(s) >= 12:
+        return s
+    if s.startswith("0") and len(s) == 10:
+        return "254" + s[1:]
+    if s.startswith("7") and len(s) == 9:
+        return "254" + s
+    return s
+# -------- Paths / DB --------
+DB_PATH = os.path.join(BASE_DIR, "rentana_full.db")
+RECEIPT_DIR = os.path.join(BASE_DIR, "static", "receipts")
+os.makedirs(RECEIPT_DIR, exist_ok=True)
+
+
+def _connect():
+    conn = sqlite3.connect(DB_PATH, detect_types=sqlite3.PARSE_DECLTYPES | sqlite3.PARSE_COLNAMES)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS payment (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id INTEGER,
+            amount REAL,
+            transaction_id TEXT UNIQUE,
+            note TEXT,
+            paid_at TEXT,
+            created_at TEXT
+        )
+    """)
+    conn.commit()
+    return conn
+
+
+def _norm_phone(p: Optional[str]) -> str:
+    if not p:
+        return ""
+    digits = "".join(ch for ch in str(p) if ch.isdigit())
+    if len(digits) == 10 and digits.startswith("0"):
+        digits = "254" + digits[1:]
+    if len(digits) == 9 and digits.startswith("7"):
+        digits = "254" + digits
+    return digits
+
+
+def _tx_exists(conn, tx_id: str) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM payment WHERE transaction_id=?", (tx_id,))
+    return cur.fetchone() is not None
+
+
+def _find_tenant_by_phone(conn, phone):
+    cur = conn.cursor()
+    target = _norm_phone(phone)
+    cur.execute("SELECT id, name, phone, house_no, monthly_rent, owner_id FROM tenant")
+    for tid, name, ph, house_no, rent, owner_id in cur.fetchall():
+        if ph and (_norm_phone(ph).endswith(target) or target.endswith(_norm_phone(ph))):
+            return {
+                "id": tid, "name": name, "phone": ph,
+                "house_no": house_no, "monthly_rent": rent, "owner_id": owner_id,
+            }
+    return None
+
+
+def _find_tenant_by_house_and_account(conn, house_no, account):
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT id FROM user
+           WHERE paybill_number=? OR till_number=? OR phone_number=?""",
+        (account, account, account),
+    )
+    users = [r[0] for r in cur.fetchall()]
+    if not users:
+        return None
+    placeholders = ",".join("?" for _ in users)
+    sql = f"""SELECT id, name, phone, house_no, monthly_rent, owner_id
+              FROM tenant WHERE lower(house_no)=? AND owner_id IN ({placeholders})"""
+    cur.execute(sql, [house_no.lower()] + users)
+    r = cur.fetchone()
+    if not r:
+        return None
+    tid, name, ph, house_no, rent, owner_id = r
+    return {"id": tid, "name": name, "phone": ph,
+            "house_no": house_no, "monthly_rent": rent, "owner_id": owner_id}
+
+
+def _insert_payment(conn, tenant_id, amount, tx_id, note=None):
+    now = datetime.utcnow().isoformat(timespec="seconds")
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO payment (tenant_id, amount, transaction_id, note, paid_at, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (tenant_id, float(amount), tx_id, note, now, now),
+        )
+        conn.commit()
+        return cur.lastrowid
+    except sqlite3.IntegrityError:
+        logging.warning(f"IntegrityError / duplicate tx ignored: {tx_id}")
+        return None
+
+
+def _total_paid(conn, tenant_id):
+    cur = conn.cursor()
+    cur.execute("SELECT SUM(amount) FROM payment WHERE tenant_id=?", (tenant_id,))
+    r = cur.fetchone()
+    return float(r[0] or 0.0)
+
+
+def _create_pdf_receipt(tenant, amount, tx_id, remaining):
+    filename = f"receipt_{tenant['id']}_{tx_id}.pdf"
+    out = os.path.join(RECEIPT_DIR, filename)
+    try:
+        if REPORTLAB_AVAILABLE:
+            c = canvas.Canvas(out, pagesize=A4)
+            c.setFont("Helvetica-Bold", 14)
+            c.drawString(50, 800, "Rentana – Payment Receipt")
+            c.setFont("Helvetica", 11)
+            c.drawString(50, 780, f"Tenant: {tenant['name']} (House {tenant['house_no']})")
+            c.drawString(50, 760, f"Amount: Ksh {amount:,.2f}")
+            c.drawString(50, 740, f"Transaction ID: {tx_id}")
+            c.drawString(50, 720, f"Remaining Balance: Ksh {remaining:,.2f}")
+            c.drawString(50, 700, f"Date: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
+            c.showPage()
+            c.save()
+        else:
+            with open(out, "w", encoding="utf-8") as f:
+                f.write(f"Tenant {tenant['name']} | {tenant['house_no']}\n")
+                f.write(f"Amount {amount}\nTx {tx_id}\nBalance {remaining}\n")
+        return out
+    except Exception:
+        traceback.print_exc()
+        return None
+
+
+def _send_sms(phone, message):
+    sid, token, from_no = (
+        os.environ.get("TWILIO_SID"),
+        os.environ.get("TWILIO_TOKEN"),
+        os.environ.get("TWILIO_FROM"),
+    )
+    if not (TWILIO_AVAILABLE and sid and token and from_no):
+        logging.info(f"SMS not sent (Twilio not configured): {message}")
+        return
+    try:
+        TwilioClient(sid, token).messages.create(body=message, from_=from_no, to=phone)
+    except Exception as e:
+        logging.error(f"Twilio error: {e}")
+
+
+# -------- Daraja verification --------
+DARAJA_CONSUMER_KEY = os.getenv("DARAJA_CONSUMER_KEY")
+DARAJA_CONSUMER_SECRET = os.getenv("DARAJA_CONSUMER_SECRET")
+DARAJA_ENV = os.getenv("DARAJA_ENV", "sandbox").lower()
+DARAJA_BASE = "https://api.safaricom.co.ke" if DARAJA_ENV == "production" else "https://sandbox.safaricom.co.ke"
+
+_OAUTH_TOKEN_CACHE = {"token": None, "expiry": 0}
+
+
+def _get_oauth_token() -> Optional[str]:
+    if not (DARAJA_CONSUMER_KEY and DARAJA_CONSUMER_SECRET):
+        logging.warning("Daraja consumer key/secret not configured.")
+        return None
+    now_ts = int(time.time())
+    if _OAUTH_TOKEN_CACHE["token"] and _OAUTH_TOKEN_CACHE["expiry"] - now_ts > 30:
+        return _OAUTH_TOKEN_CACHE["token"]
+    url = f"{DARAJA_BASE}/oauth/v1/generate?grant_type=client_credentials"
+    try:
+        resp = requests.get(url, auth=(DARAJA_CONSUMER_KEY, DARAJA_CONSUMER_SECRET), timeout=10)
+        j = resp.json()
+        token = j.get("access_token")
+        expires_in = int(j.get("expires_in", 3600))
+        _OAUTH_TOKEN_CACHE["token"] = token
+        _OAUTH_TOKEN_CACHE["expiry"] = now_ts + expires_in
+        return token
+    except Exception as e:
+        logging.error(f"Daraja token fetch failed: {e}")
+        return None
+
+
+def verify_transaction_with_daraja(transaction_id: str, amount: float, msisdn: str, shortcode: str) -> bool:
+    token = _get_oauth_token()
+    if not token:
+        return False
+    url = f"{DARAJA_BASE}/mpesa/transactionstatus/v1/query"
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    body = {
+        "CommandID": "TransactionStatusQuery",
+        "PartyA": shortcode,
+        "IdentifierType": "4",
+        "Remarks": "verify",
+        "Initiator": os.getenv("DARAJA_INITIATOR", "testapi"),
+        "SecurityCredential": os.getenv("DARAJA_SECURITY_CREDENTIAL", ""),
+        "TransactionID": transaction_id,
+        "Occasion": "verify"
+    }
+    try:
+        resp = requests.post(url, json=body, headers=headers, timeout=12)
+        if resp.status_code not in (200, 201):
+            logging.error(f"Daraja verify failed HTTP {resp.status_code}: {resp.text}")
+            return False
+        resp_text = str(resp.text).lower()
+        return any(k in resp_text for k in ["completed", "success", "accepted"])
+    except Exception as e:
+        logging.error(f"Daraja verify exception: {e}")
+        return False
+
+
+# -------- Core Payment Processing --------
+
+
+def process_direct_payment(account, amount, tx_id, note=None, msisdn=None):
+    DEFAULT_PAYBILL = "522533"
+    conn = _connect()
+    try:
+        # basic tx_id sanity
+        tx_id = (tx_id or "").strip()
+        if not tx_id:
+            return {"ok": False, "reason": "missing_tx_id"}
+
+        # parse and normalise amount safely
+        try:
+            amount_val = Decimal(str(amount or "0"))
+        except (InvalidOperation, TypeError):
+            logger.warning("Invalid amount for tx %s: %r", tx_id, amount)
+            return {"ok": False, "reason": "invalid_amount"}
+        if amount_val <= 0:
+            return {"ok": False, "reason": "invalid_amount"}
+
+        # quick duplicate check (fast path)
+        if _tx_exists(conn, tx_id):
+            logger.info("Duplicate tx detected early: %s", tx_id)
+            return {"ok": False, "reason": "duplicate_tx"}
+
+        account = (account or "").strip()
+        house_no = None
+        account_numeric = None
+        if "#" in account:
+            parts = account.split("#", 1)
+            account_numeric = parts[0].strip() or DEFAULT_PAYBILL
+            house_no = parts[1].strip() or None
+        else:
+            account_numeric = DEFAULT_PAYBILL
+            house_no = account or None
+
+        # normalize msisdn for lookups and verification
+        msisdn_norm = _normalize_msisdn(msisdn)
+
+        # locate tenant
+        tenant = _find_tenant_by_house_and_account(conn, house_no, account_numeric)
+        if not tenant and msisdn_norm:
+            tenant = _find_tenant_by_phone(conn, msisdn_norm)
+        if not tenant:
+            logger.info("Tenant not found for account=%s house=%s phone=%s tx=%s",
+                        account_numeric, house_no, msisdn_norm, tx_id)
+            return {"ok": False, "reason": "tenant_not_found"}
+
+        # use tenant phone if msisdn not supplied
+        tenant_phone = _normalize_msisdn(tenant.get("phone")) or msisdn_norm
+
+        # verify with Daraja (provider) before mutating DB
+        try:
+            verify_ok = verify_transaction_with_daraja(tx_id, float(amount_val), tenant_phone, account_numeric)
+        except Exception:
+            logger.exception("Error during Daraja verification for tx %s", tx_id)
+            return {"ok": False, "reason": "verification_error"}
+        if not verify_ok:
+            logger.info("Verification failed for tx %s", tx_id)
+            return {"ok": False, "reason": "verification_failed"}
+
+        # Insert payment and apply updates atomically
+        try:
+            with conn:
+                pid = _insert_payment(conn, tenant["id"], float(amount_val), tx_id, note=note)
+                if pid is None:
+                    logger.info("Duplicate tx detected during insert: %s", tx_id)
+                    return {"ok": False, "reason": "duplicate_tx"}
+
+                total = _total_paid(conn, tenant["id"])
+                remaining = max(0.0, (tenant.get("monthly_rent") or 0.0) - total)
+
+                receipt = _create_pdf_receipt(tenant, float(amount_val), tx_id, remaining)
+
+                sms = (
+                    f"Dear {tenant.get('name')}, payment of Ksh {int(amount_val):,} for House "
+                    f"{tenant.get('house_no')} received. Balance: Ksh {int(remaining):,}."
+                )
+        except IntegrityError as e:
+            logger.warning("DB integrity error inserting tx %s: %s", tx_id, e)
+            return {"ok": False, "reason": "duplicate_tx"}
+        except Exception:
+            logger.exception("Unexpected DB error when inserting payment %s", tx_id)
+            return {"ok": False, "reason": "db_error"}
+
+        # send SMS after successful commit (best-effort)
+        try:
+            _send_sms(tenant.get("phone"), sms)
+        except Exception:
+            logger.exception("Failed to send SMS for tx %s", tx_id)
+
+        return {
+            "ok": True,
+            "tenant_id": tenant["id"],
+            "receipt": receipt,
+            "amount": float(amount_val),
+            "tx_id": tx_id
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.exception("Error closing DB connection")
+    DEFAULT_PAYBILL = "522533"
+    conn = _connect()
+    try:
+        # basic tx_id sanity
+        tx_id = (tx_id or "").strip()
+        if not tx_id:
+            return {"ok": False, "reason": "missing_tx_id"}
+
+        # parse and normalise amount safely
+        try:
+            amount_val = Decimal(str(amount or "0"))
+        except (InvalidOperation, TypeError):
+            logger.warning("Invalid amount for tx %s: %r", tx_id, amount)
+            return {"ok": False, "reason": "invalid_amount"}
+        if amount_val <= 0:
+            return {"ok": False, "reason": "invalid_amount"}
+
+        # quick duplicate check (fast path)
+        if _tx_exists(conn, tx_id):
+            logger.info("Duplicate tx detected early: %s", tx_id)
+            return {"ok": False, "reason": "duplicate_tx"}
+
+        account = (account or "").strip()
+        house_no = None
+        account_numeric = None
+        if "#" in account:
+            parts = account.split("#", 1)
+            account_numeric = parts[0].strip() or DEFAULT_PAYBILL
+            house_no = parts[1].strip() or None
+        else:
+            account_numeric = DEFAULT_PAYBILL
+            house_no = account or None
+
+        # normalize msisdn for lookups and verification
+        msisdn_norm = _normalize_msisdn(msisdn)
+
+        # locate tenant
+        tenant = _find_tenant_by_house_and_account(conn, house_no, account_numeric)
+        if not tenant and msisdn_norm:
+            tenant = _find_tenant_by_phone(conn, msisdn_norm)
+        if not tenant:
+            logger.info("Tenant not found for account=%s house=%s phone=%s tx=%s",
+                        account_numeric, house_no, msisdn_norm, tx_id)
+            return {"ok": False, "reason": "tenant_not_found"}
+
+        # use tenant phone if msisdn not supplied
+        tenant_phone = _normalize_msisdn(tenant.get("phone")) or msisdn_norm
+
+        # verify with Daraja (provider) before mutating DB
+        try:
+            verify_ok = verify_transaction_with_daraja(tx_id, float(amount_val), tenant_phone, account_numeric)
+        except Exception as e:
+            logger.exception("Error during Daraja verification for tx %s", tx_id)
+            return {"ok": False, "reason": "verification_error"}
+        if not verify_ok:
+            logger.info("Verification failed for tx %s", tx_id)
+            return {"ok": False, "reason": "verification_failed"}
+
+        # Insert payment and apply updates atomically
+        try:
+            # start a DB transaction if your _connect returns raw conn/cursor
+            with conn:
+                pid = _insert_payment(conn, tenant["id"], float(amount_val), tx_id, note=note)
+                if pid is None:
+                    # _insert_payment may return None when duplicate; double-check
+                    logger.info("Duplicate tx detected during insert: %s", tx_id)
+                    return {"ok": False, "reason": "duplicate_tx"}
+
+                # compute new totals and remaining balance inside transaction
+                total = _total_paid(conn, tenant["id"])
+                remaining = max(0.0, (tenant.get("monthly_rent") or 0.0) - total)
+
+                # create receipt and send SMS after DB changes (still inside tx if you want)
+                receipt = _create_pdf_receipt(tenant, float(amount_val), tx_id, remaining)
+
+                sms = (
+                    f"Dear {tenant.get('name')}, payment of Ksh {int(amount_val):,} for House "
+                    f"{tenant.get('house_no')} received. Balance: Ksh {int(remaining):,}."
+                )
+
+                # If _send_sms is async/outside DB, consider doing it after commit.
+                # Here we call it after the transaction context exits so it's after commit.
+        except IntegrityError as e:
+            logger.warning("DB integrity error inserting tx %s: %s", tx_id, e)
+            return {"ok": False, "reason": "duplicate_tx"}
+        except Exception:
+            logger.exception("Unexpected DB error when inserting payment %s", tx_id)
+            return {"ok": False, "reason": "db_error"}
+
+        # If you moved SMS outside the transaction, send it here (after successful commit)
+        try:
+            _send_sms(tenant.get("phone"), sms)
+        except Exception:
+            logger.exception("Failed to send SMS for tx %s", tx_id)
+            # do not fail the whole operation because SMS failed
+
+        return {
+            "ok": True,
+            "tenant_id": tenant["id"],
+            "receipt": receipt,
+            "amount": float(amount_val),
+            "tx_id": tx_id
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            logger.exception("Error closing DB connection")
+
+
+# -------- Flask Blueprint --------
+mpesa_bp = Blueprint("mpesa_bp", __name__)
+
+@mpesa_bp.route("/payment_callback/validate", methods=["POST"])
+def mpesa_validate():
+    data = request.json or {}
+    logging.info(f"VALIDATION: {data}")
+    return jsonify({"ResultCode": 0, "ResultDesc": "Validation Passed"}), 200
+
+
+@mpesa_bp.route("/payment_callback/confirm", methods=["POST"])
+def mpesa_confirm():
+    data = request.json or {}
+    logging.info(f"CONFIRM payload: {data}")
+    try:
+        tx_id = data.get("TransID") or data.get("transaction_id")
+        amount = float(data.get("TransAmount", data.get("Amount", 0)))
+        msisdn = data.get("MSISDN")
+        bill_ref = data.get("BillRefNumber") or data.get("AccountReference") or ""
+        shortcode = str(data.get("BusinessShortCode", "")) or os.getenv("DEFAULT_PAYBILL", "522533")
+        account_ref = f"{shortcode}#{bill_ref}" if bill_ref else shortcode
+
+        result = process_direct_payment(account_ref, amount, tx_id, note=f"M-Pesa from {msisdn}", msisdn=msisdn)
+
+        if not result.get("ok"):
+            logging.warning(f"Payment NOT processed: {result}")
+            return jsonify({"ResultCode": 1, "ResultDesc": f"Failed: {result.get('reason')}"}), 200
+
+        return jsonify({"ResultCode": 0, "ResultDesc": "Payment processed successfully"}), 200
+    except Exception as e:
+        logging.error(f"Exception in mpesa_confirm: {e}")
+        traceback.print_exc()
+        return jsonify({"ResultCode": 1, "ResultDesc": "Internal Error"}), 200
+
+
+@mpesa_bp.route("/payment_callback/test", methods=["POST"])
+def mpesa_test():
+    try:
+        data = request.json or {}
+        amount = float(data.get("amount", 1000))
+        tx_id = data.get("tx_id", f"TEST{int(datetime.utcnow().timestamp())}")
+        ref = data.get("bill_ref", "522533#14")
+        msisdn = str(data.get("phone", "254700000000"))
+
+        print("📩 Incoming TEST payment:", data)
+        result = process_direct_payment(
+            ref, amount, tx_id,
+            note=f"Manual test {msisdn}",
+            msisdn=msisdn
+        )
+        print("✅ process_direct_payment result:", result)
+        return jsonify(result), 200
+
+    except Exception as e:
+        import traceback
+        print("❌ EXCEPTION in /payment_callback/test:", e)
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500

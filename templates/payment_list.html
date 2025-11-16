@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Payments{% endblock %}
+
+{% block content %}
+<h2 class="mb-3">Payment List</h2>
+
+<div class="table-responsive">
+  <table class="table futuristic-table">
+    <thead>
+      <tr>
+        <th>Tenant</th>
+        <th>Amount</th>
+        <th>Note</th>
+        <th>Paid At</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for payment in payments %}
+      <tr>
+        <td>{{ payment.tenant.name }}</td>
+        <td>{{ payment.amount | round(2) }}</td>
+        <td>{{ payment.note }}</td>
+        <td>{{ payment.paid_at.strftime("%Y-%m-%d %H:%M") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
