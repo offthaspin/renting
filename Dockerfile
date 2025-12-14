@@ -1,8 +1,8 @@
-# Base image with Python 3.13
-FROM python:3.13-slim
+# Use Debian bookworm slim with Python 3.13
+FROM python:3.13.4-slim-bookworm
 
-# Install system dependencies needed for bcc and other system packages
-RUN apt-get update && apt-get install -y \
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     bpfcc-tools libbcc libbcc-examples \
     python3-dev build-essential \
     libffi-dev libssl-dev \
