@@ -3,8 +3,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import date
 import pytz
-from models import auto_update_all_unpaid_rents
-from extensions import db
+from rentme.models import auto_update_all_unpaid_rents
+from rentme.extensions import db
 
 # Kenya timezone (EAT)
 kenya_tz = pytz.timezone("Africa/Nairobi")

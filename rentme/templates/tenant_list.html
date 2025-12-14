@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Tenants{% endblock %}
+
+{% block content %}
+<div class="glass" style="padding: 24px; margin: 32px;">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>Tenant List</h2>
+    <a href="{{ url_for('tenant_add') }}" class="btn btn-primary">➕ Add Tenant</a>
+  </div>
+
+  <input type="text" id="searchBox" class="form-control mb-4"
+         placeholder="Search tenant..." value="{{ query or '' }}">
+
+  {% if tenants %}
+  <div style="overflow-x:auto;">
+    <table class="table table-hover align-middle table-bordered text-center" style="width:100%;">
+      <thead class="table-dark">
+        <tr>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>National ID</th>
+          <th>House No</th>
+          <th>Monthly Rent (Ksh)</th>
+          <th>Total Paid</th>
+          <th>Balance</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+
+      <tbody id="tenantTable">
+        {% include "_tenant_rows.html" %}
+      </tbody>
+    </table>
+  </div>
+
+  <div id="paginationContainer">
+    {% include "_tenant_pagination.html" %}
+  </div>
+
+  {% else %}
+  <p class="mt-4 text-center">No tenants found.
+    <a href="{{ url_for('tenant_add') }}">Add one now</a>.
+  </p>
+  {% endif %}
+</div>
+
+<script>
+let timer = null;
+
+document.getElementById("searchBox").addEventListener("input", function () {
+    clearTimeout(timer);
+    timer = setTimeout(() => liveSearch(this.value), 300);
+});
+
+function highlight(text, query) {
+    if (!query) return text;
+    const re = new RegExp(`(${query})`, "gi");
+    return text.replace(re, '<mark>$1</mark>');
+}
+
+function liveSearch(q) {
+    const url = `/tenants?q=${encodeURIComponent(q)}`;
+
+    fetch(url, { headers: { "X-Requested-With": "XMLHttpRequest" } })
+        .then(response => response.json())
+        .then(data => {
+            document.getElementById("tenantTable").innerHTML = data.rows;
+            document.getElementById("paginationContainer").innerHTML = data.pagination;
+
+            // client-side highlight
+            if (q) {
+                document.querySelectorAll("#tenantTable td").forEach(td => {
+                    td.innerHTML = highlight(td.innerHTML, q);
+                });
+            }
+        });
+}
+</script>
+{% endblock %}

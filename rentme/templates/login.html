@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-5">
+    <h2>Login</h2>
+    <hr>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ message }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+   <form method="POST">
+    {{ form.hidden_tag() }}
+
+    <!-- Email OR Phone -->
+    <div class="mb-3">
+        <label for="identifier" class="form-label">Email or Phone</label>
+        <input
+            type="text"
+            name="identifier"
+            id="identifier"
+            class="form-control"
+            required
+            placeholder="Enter your email or phone (e.g. 2547XXXXXXXX)"
+            value="{{ identifier or '' }}">
+    </div>
+
+    <!-- Password -->
+    <div class="mb-3">
+        <label for="password" class="form-label">Password</label>
+        <input
+            type="password"
+            name="password"
+            id="password"
+            class="form-control"
+            required>
+    </div>
+
+    <button type="submit" class="btn btn-primary">Login</button>
+
+    <a href="{{ url_for('register') }}" class="btn btn-link">
+        Don't have an account? Register
+    </a>
+
+    <a href="{{ url_for('forgot_password') }}" class="btn btn-link">
+        Forgot password?
+    </a>
+</form>
+
+</div>
+{% endblock %}

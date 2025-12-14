@@ -1,0 +1,178 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-5">
+
+    <h2 class="mb-1">M-Pesa & Payment Settings</h2>
+    <p class="text-muted">
+        Per-landlord M-Pesa credentials and receiving numbers. These values override global config when present.
+    </p>
+
+    <!-- Flash messages -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div class="alert alert-{{ category }} alert-dismissible fade show" role="alert">
+            {{ msg }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+
+    <form id="mpesaForm" method="POST" action="{{ url_for('landlord_settings.settings_payment') }}">
+    {{ form.hidden_tag() }}
+
+    <div class="row g-3">
+        <!-- Payment Method & Numbers -->
+        <div class="col-md-6">
+            {{ form.payment_method.label(class="form-label") }}
+            {{ form.payment_method(class="form-select") }}
+            <div class="form-text">How tenants will send payments.</div>
+        </div>
+
+        <div class="col-md-6">
+            {{ form.paybill_number.label(class="form-label") }}
+            {{ form.paybill_number(class="form-control", placeholder="e.g. 123456") }}
+        </div>
+
+        <div class="col-md-6">
+            {{ form.till_number.label(class="form-label") }}
+            {{ form.till_number(class="form-control", placeholder="e.g. 898989") }}
+        </div>
+
+        <div class="col-md-6">
+            {{ form.send_money_number.label(class="form-label") }}
+            {{ form.send_money_number(class="form-control", placeholder="2547XXXXXXXX") }}
+        </div>
+
+        <div class="col-md-6">
+            {{ form.phone_number.label(class="form-label") }}
+            {{ form.phone_number(class="form-control", placeholder="Optional number visible to tenants") }}
+        </div>
+
+        <div class="col-12"><hr></div>
+
+        <!-- Sensitive M-Pesa Credentials -->
+        <div class="col-md-6">
+            {{ form.mpesa_consumer_key.label(class="form-label") }}
+            {{ form.mpesa_consumer_key(class="form-control") }}
+        </div>
+
+        <div class="col-md-6">
+            {{ form.mpesa_consumer_secret.label(class="form-label") }}
+            {{ form.mpesa_consumer_secret(class="form-control") }}
+            <div class="mt-2 d-flex gap-2 flex-wrap">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="toggleSecret">Show</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="copySecret">Copy</button>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            {{ form.mpesa_shortcode.label(class="form-label") }}
+            {{ form.mpesa_shortcode(class="form-control") }}
+        </div>
+
+        <div class="col-md-6">
+            {{ form.mpesa_passkey.label(class="form-label") }}
+            {{ form.mpesa_passkey(class="form-control") }}
+            <div class="mt-2 d-flex gap-2 flex-wrap">
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="togglePasskey">Show</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="copyPasskey">Copy</button>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            {{ form.mpesa_mode.label(class="form-label") }}
+            {{ form.mpesa_mode(class="form-select") }}
+        </div>
+
+        <div class="col-md-6">
+            {{ form.callback_url.label(class="form-label") }}
+            {{ form.callback_url(class="form-control") }}
+            <div class="form-text">Used as Daraja callback URL for STK and confirmations.</div>
+        </div>
+    </div>
+
+    <!-- Bottom Buttons (Safe Layout) -->
+    <div class="mt-4 mb-5 d-flex flex-wrap gap-3 align-items-center">
+        {{ form.submit(class="btn btn-primary") }}
+        {{ form.test_credentials(class="btn btn-outline-secondary") }}
+        <div id="formFeedback" class="ms-3 small flex-grow-1"></div>
+    </div>
+</form>
+
+</div>
+
+<script>
+/* ------- Toggle & Copy Buttons ------- */
+function toggleField(btnId, inputId) {
+    const btn = document.getElementById(btnId);
+    const inp = document.getElementById(inputId);
+    btn.addEventListener('click', () => {
+        inp.type = inp.type === 'password' ? 'text' : 'password';
+        btn.textContent = inp.type === 'password' ? 'Show' : 'Hide';
+    });
+}
+
+function copyField(btnId, inputId) {
+    const btn = document.getElementById(btnId);
+    const inp = document.getElementById(inputId);
+    btn.addEventListener('click', async () => {
+        if (!inp.value) return; // only copy if value exists
+        await navigator.clipboard.writeText(inp.value);
+        btn.textContent = "Copied";
+        setTimeout(()=> btn.textContent = "Copy", 1000);
+    });
+}
+
+toggleField("toggleSecret", "mpesa_consumer_secret");
+toggleField("togglePasskey", "mpesa_passkey");
+copyField("copySecret", "mpesa_consumer_secret");
+copyField("copyPasskey", "mpesa_passkey");
+
+/* ------- Test Credentials (server-side only secrets) ------- */
+document.getElementById("testAuth")?.addEventListener("click", async () => {
+    const fb = document.getElementById("formFeedback");
+    fb.innerHTML = "Testing…";
+
+    const shortcode = document.getElementById("mpesa_shortcode").value.trim();
+    const mode = document.getElementById("mpesa_mode").value;
+
+    if (!shortcode) {
+        fb.innerHTML = '<span class="text-danger fw-bold">Please fill the shortcode field</span>';
+        return;
+    }
+
+    try {
+        const resp = await fetch("{{ url_for('landlord_settings.test_mpesa') }}", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "X-CSRFToken": "{{ csrf_token() }}"
+            },
+            body: JSON.stringify({ shortcode, mode }) // no secrets sent
+        });
+
+        const json = await resp.json();
+        fb.innerHTML = json.ok
+            ? '<span class="text-success fw-bold">✔ Credentials valid</span>'
+            : '<span class="text-danger fw-bold">✖ ' + (json.msg || 'Invalid') + '</span>';
+    } catch (e) {
+        console.error(e);
+        fb.innerHTML = '<span class="text-danger fw-bold">Request failed</span>';
+    }
+});
+
+/* ------- Client validation on submit ------- */
+document.getElementById("mpesaForm")?.addEventListener("submit", (e) => {
+    const sc = document.getElementById("mpesa_shortcode");
+    if (sc.value && !/^[0-9\-]+$/.test(sc.value)) {
+        e.preventDefault();
+        alert("Shortcode must be numeric.");
+        sc.focus();
+    }
+});
+</script>
+{% endblock %}

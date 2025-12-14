@@ -1,0 +1,58 @@
+{% for tenant in tenants %}
+<tr>
+  <td>{{ tenant.name|safe }}</td>
+  <td>{{ tenant.phone|safe }}</td>
+  <td>{{ tenant.national_id or '-' }}</td>
+  <td>{{ tenant.house_no|safe }}</td>
+  <td>{{ "%.2f"|format(tenant.monthly_rent or 0) }}</td>
+  <td>{{ "%.2f"|format(tenant.total_paid()) }}</td>
+
+  <td>
+    {% set bal = tenant.balance %}
+    <span class="{% if bal < 0 %}text-danger{% else %}text-success{% endif %}">
+      {{ tenant.formatted_balance() }}
+    </span>
+  </td>
+
+  <td>
+    <a href="{{ url_for('payment_add', tenant_id=tenant.id) }}"
+       class="btn btn-sm btn-outline-success">💰 Pay</a>
+
+    <form action="{{ url_for('tenant_delete', tenant_id=tenant.id) }}"
+          method="POST" style="display:inline;"
+          onsubmit="return confirm('Delete this tenant?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-sm btn-outline-danger">🗑</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}
+{% for tenant in tenants %}
+<tr>
+  <td data-text="{{ tenant.name }}">{{ tenant.name }}</td>
+  <td data-text="{{ tenant.phone }}">{{ tenant.phone }}</td>
+  <td>{{ tenant.national_id or '-' }}</td>
+  <td data-text="{{ tenant.house_no }}">{{ tenant.house_no }}</td>
+  <td>{{ "%.2f"|format(tenant.monthly_rent or 0) }}</td>
+  <td>{{ "%.2f"|format(tenant.total_paid()) }}</td>
+
+  <td>
+    {% set bal = tenant.balance %}
+    <span class="{% if bal < 0 %}text-danger{% else %}text-success{% endif %}">
+      {{ tenant.formatted_balance() }}
+    </span>
+  </td>
+
+  <td>
+    <a href="{{ url_for('payment_add', tenant_id=tenant.id) }}"
+       class="btn btn-sm btn-outline-success">💰 Pay</a>
+
+    <form action="{{ url_for('tenant_delete', tenant_id=tenant.id) }}"
+          method="POST" style="display:inline;"
+          onsubmit="return confirm('Delete this tenant?');">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-sm btn-outline-danger">🗑</button>
+    </form>
+  </td>
+</tr>
+{% endfor %}
