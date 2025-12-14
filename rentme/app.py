@@ -82,7 +82,7 @@ limiter = Limiter(
 # Environment overrides
 # -----------------------
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "change-me-in-prod")
-db_url = os.getenv("DATABASE_URL") or f"sqlite:///{DB_PATH}"
+db_url = os.getenv("DATABASE_URL") 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["MAX_CONTENT_LENGTH"] = 20 * 1024 * 1024
@@ -162,7 +162,6 @@ def log_request_info():
 # DB + Scheduler
 # -----------------------
 with app.app_context():
-    db.create_all()
     start_scheduler()
 
 # -----------------------
@@ -225,31 +224,52 @@ def register():
         return redirect(url_for("dashboard"))
 
     form = RegisterForm()
-    if form.validate_on_submit():
-        # Check if email or phone already exists
-        email_exists = User.query.filter_by(email=form.email.data.lower()).first()
-        phone_exists = None
-        if form.login_phone.data:
-            phone_exists = User.query.filter_by(login_phone=form.login_phone.data).first()
 
+    if form.validate_on_submit():
+        email = form.email.data.strip().lower()
+        raw_phone = form.login_phone.data.strip() if form.login_phone.data else ""
+        phone = normalize_msisdn(raw_phone) if raw_phone else None
+
+        # 🔍 Check existing email
+        email_exists = User.query.filter_by(email=email).first()
         if email_exists:
             flash("Email already registered. Please login.", "warning")
             return redirect(url_for("login"))
-        if phone_exists:
-            flash("Phone number already registered. Please login.", "warning")
-            return redirect(url_for("login"))
 
-        # Create user
+        # 🔍 Check existing phone (only if provided & valid)
+        if phone:
+            phone_exists = User.query.filter_by(login_phone=phone).first()
+            if phone_exists:
+                flash("Phone number already registered. Please login.", "warning")
+                return redirect(url_for("login"))
+
+        # 🚨 Invalid phone provided
+        if raw_phone and not phone:
+            flash("Invalid phone number format.", "danger")
+            return redirect(url_for("register"))
+
+        # ✅ Create user
         user = User(
-            full_name=form.full_name.data,
-            email=form.email.data.lower(),
-            login_phone=form.login_phone.data or None,
+            full_name=form.full_name.data.strip(),
+            email=email,
+            login_phone=phone,
             password_hash=generate_password_hash(form.password.data)
         )
-        db.session.add(user)
-        db.session.commit()
 
-        audit(user, "user_registered", f"email:{user.email}, phone:{user.login_phone or '-'}")
+        try:
+            db.session.add(user)
+            db.session.commit()
+        except Exception as e:
+            db.session.rollback()
+            flash("Registration failed. Please try again.", "danger")
+            return redirect(url_for("register"))
+
+        audit(
+            user,
+            "user_registered",
+            f"email:{user.email}, phone:{user.login_phone or '-'}"
+        )
+
         flash("Registration successful! You can now login.", "success")
         return redirect(url_for("login"))
 
