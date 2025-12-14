@@ -1,9 +1,8 @@
 # Use Debian bookworm slim with Python 3.13
 FROM python:3.13.4-slim-bookworm
 
-# Install system dependencies
+# Install REQUIRED system dependencies only
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bpfcc-tools libbcc libbcc-examples \
     python3-dev build-essential \
     libffi-dev libssl-dev \
     libcairo2-dev pkg-config \
@@ -26,5 +25,5 @@ COPY . .
 # Expose default port for Render
 EXPOSE 10000
 
-# Start your app
-CMD ["gunicorn", "app:app", "-b", "0.0.0.0:10000", "--workers", "3"]
+# Start your app (adjust module if needed)
+CMD ["gunicorn", "rentme.app:app", "-b", "0.0.0.0:10000", "--workers", "3"]
