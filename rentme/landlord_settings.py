@@ -8,7 +8,7 @@ from flask_login import login_required, current_user
 from .extensions import db
 from .models import LandlordSettings
 from .forms import MPesaSettingsForm
-
+from .security.crypto import encrypt, decrypt
 
 # -------------------------------------------------
 # BLUEPRINT
@@ -60,13 +60,17 @@ def settings_payment():
         # MPESA API credentials
         # ----------------------------
         if form.mpesa_consumer_key.data:
-            settings.mpesa_consumer_key = form.mpesa_consumer_key.data
+            settings.mpesa_consumer_key = encrypt(form.mpesa_consumer_key.data)
+
         if form.mpesa_consumer_secret.data:
-            settings.mpesa_consumer_secret = form.mpesa_consumer_secret.data
-        if form.mpesa_shortcode.data:
-            settings.mpesa_shortcode = form.mpesa_shortcode.data
+            settings.mpesa_consumer_secret = encrypt(form.mpesa_consumer_secret.data)
+
         if form.mpesa_passkey.data:
-            settings.mpesa_passkey = form.mpesa_passkey.data
+            settings.mpesa_passkey = encrypt(form.mpesa_passkey.data)
+
+        if form.mpesa_shortcode.data:
+           settings.mpesa_shortcode = form.mpesa_shortcode.data
+
         if form.callback_url.data:
             settings.callback_url = form.callback_url.data
 
@@ -101,35 +105,18 @@ def settings_payment():
 
 
 # -------------------------------------------------
-# TEST MPESA CREDENTIALS
+# -------------------------------------------------
+# TEST MPESA CREDENTIALS (SECURE / MULTI-TENANT)
 # -------------------------------------------------
 @landlord_settings_bp.route("/settings/payment/test", methods=["POST"])
 @login_required
 def test_mpesa():
-    """Test MPesa Consumer Key + Secret using Daraja OAuth call."""
+    """Test stored MPesa credentials using Daraja OAuth."""
 
     settings = get_or_create_settings()
     body = request.get_json(silent=True) or {}
 
-    # Prefer JSON body, fallback to form, fallback to DB settings
-    consumer_key = (
-        body.get("consumer_key")
-        or request.form.get("consumer_key")
-        or settings.mpesa_consumer_key
-    )
-
-    consumer_secret = (
-        body.get("consumer_secret")
-        or request.form.get("consumer_secret")
-        or settings.mpesa_consumer_secret
-    )
-
-    shortcode = (
-        body.get("shortcode")
-        or request.form.get("shortcode")
-        or settings.mpesa_shortcode
-    )
-
+    # Mode can be tested dynamically
     mode = (
         body.get("mode")
         or request.form.get("mode")
@@ -137,30 +124,54 @@ def test_mpesa():
         or "production"
     ).lower()
 
-    if not consumer_key or not consumer_secret:
-        return jsonify({"ok": False, "msg": "Missing Consumer Key or Secret"}), 400
+    # -------------------------------------------------
+    # 🔐 LOAD & DECRYPT CREDENTIALS (DB ONLY)
+    # -------------------------------------------------
+    try:
+        consumer_key = decrypt(settings.mpesa_consumer_key)
+        consumer_secret = decrypt(settings.mpesa_consumer_secret)
+    except Exception:
+        return jsonify({
+            "ok": False,
+            "msg": "Stored credentials are corrupted or unreadable"
+        }), 500
 
+    if not consumer_key or not consumer_secret:
+        return jsonify({
+            "ok": False,
+            "msg": "Missing stored Consumer Key or Secret"
+        }), 400
+
+    # -------------------------------------------------
     # Daraja OAuth URL
+    # -------------------------------------------------
     auth_url = (
         "https://api.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
         if mode == "production"
         else "https://sandbox.safaricom.co.ke/oauth/v1/generate?grant_type=client_credentials"
     )
 
+    # -------------------------------------------------
+    # OAuth Request
+    # -------------------------------------------------
     try:
-        r = requests.get(auth_url, auth=(consumer_key, consumer_secret), timeout=10)
+        r = requests.get(
+            auth_url,
+            auth=(consumer_key, consumer_secret),
+            timeout=10
+        )
 
         if r.status_code not in (200, 201):
             try:
                 data = r.json()
-            except:
+            except Exception:
                 data = {"raw": r.text}
 
             return jsonify({
                 "ok": False,
-                "msg": "OAuth Request Failed",
+                "msg": "OAuth authentication failed",
                 "status": r.status_code,
-                "response": data
+                "environment": mode
             }), 400
 
         data = r.json()
@@ -168,14 +179,13 @@ def test_mpesa():
 
         return jsonify({
             "ok": True,
-            "msg": "MPesa Credentials Are Valid ✔️",
+            "msg": "MPesa credentials are valid ✔️",
             "token_sample": f"{token[:8]}..." if token else None,
             "environment": mode
         })
 
-    except requests.RequestException as ex:
+    except requests.RequestException:
         return jsonify({
             "ok": False,
-            "msg": "Network Error",
-            "error": str(ex)
-        }), 500
+            "msg": "Network error while contacting Safaricom"
+        }), 502

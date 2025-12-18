@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="glass" style="max-width: 480px; margin: 64px auto; padding: 32px; text-align: center;">
+  <h1 style="font-size: 4rem; margin-bottom: 16px;">{{ code or 'Error' }}</h1>
+  <p style="font-size: 1.2rem; margin-bottom: 24px;">
+    {{ message or 'Something went wrong. Please try again later.' }}
+  </p>
+  <a href="{{ url_for('dashboard') }}" class="btn" style="padding: 12px 24px; font-size: 1rem;">
+    ⬅ Go Back Home
+  </a>
+</div>
+{% endblock %}

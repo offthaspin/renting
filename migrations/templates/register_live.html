@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Daraja Live Registration</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #fefefe;
+      padding: 40px;
+      color: #333;
+    }
+    .container {
+      max-width: 500px;
+      margin: auto;
+      background: #fff;
+      padding: 25px 30px;
+      border-radius: 10px;
+      box-shadow: 0 3px 10px rgba(0,0,0,0.1);
+    }
+    h2 {
+      text-align: center;
+      color: #28a745;
+      margin-bottom: 20px;
+    }
+    label {
+      display: block;
+      margin-top: 12px;
+      font-weight: bold;
+    }
+    input {
+      width: 100%;
+      padding: 10px;
+      margin-top: 5px;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      font-size: 15px;
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      margin-top: 20px;
+      border: none;
+      background: #28a745;
+      color: white;
+      font-size: 16px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    button:hover { background: #1e7e34; }
+    pre {
+      background: #1a1a1a;
+      color: #00ff99;
+      padding: 15px;
+      border-radius: 8px;
+      margin-top: 20px;
+      font-size: 14px;
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Daraja Live Registration</h2>
+    <label>Consumer Key</label>
+    <input id="key" type="text" placeholder="Enter Live Consumer Key" />
+    <label>Consumer Secret</label>
+    <input id="secret" type="text" placeholder="Enter Live Consumer Secret" />
+    <label>Short Code</label>
+    <input id="shortcode" type="text" placeholder="Enter Live Short Code" />
+    <label>Callback Base URL</label>
+    <input id="callback" type="text" placeholder="https://yourdomain.com/payment_callback" />
+    <button onclick="registerLive()">Register Live</button>
+    <pre id="output"></pre>
+  </div>
+
+  <script>
+    async function registerLive() {
+      const payload = {
+        env: "live",
+        consumer_key: document.getElementById("key").value.trim(),
+        consumer_secret: document.getElementById("secret").value.trim(),
+        shortcode: document.getElementById("shortcode").value.trim(),
+        callback_url: document.getElementById("callback").value.trim(),
+      };
+      document.getElementById("output").innerText = "⏳ Registering live...";
+      try {
+        const res = await fetch("/api/register", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        document.getElementById("output").innerText = JSON.stringify(data, null, 2);
+      } catch (e) {
+        document.getElementById("output").innerText = "❌ Error: " + e;
+      }
+    }
+  </script>
+</body>
+</html>

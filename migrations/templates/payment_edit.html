@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Edit Payment</h2>
+
+<form method="POST">
+    <div>
+        <label>Tenant:</label>
+        <input type="text" value="{{ payment.tenant.name }}" disabled>
+    </div>
+    <div>
+        <label>Amount:</label>
+        <input type="number" step="0.01" name="amount" value="{{ payment.amount }}" required>
+    </div>
+    <div>
+        <label>Note:</label>
+        <textarea name="note">{{ payment.note }}</textarea>
+    </div>
+    <div style="margin-top: 10px;">
+        <button type="submit">Save</button>
+        <a href="{{ url_for('tenant_list') }}">Cancel</a>
+    </div>
+</form>
+{% endblock %}

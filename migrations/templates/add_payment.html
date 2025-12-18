@@ -1,0 +1,173 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container mt-5">
+  <div class="glass p-4" style="border-radius: 18px;">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h2 class="mb-0">Record Payment</h2>
+      <span class="badge bg-primary px-3 py-2" style="border-radius: 999px;">
+        {{ tenant.name }}
+      </span>
+    </div>
+    <p class="text-muted mb-4">
+      Fill in the payment details below. You’ll confirm with your password before saving.
+    </p>
+
+    <form method="post"
+      id="add-payment-form"
+      action="{{ url_for('payment_add', tenant_id=tenant.id) }}"
+      autocomplete="off">
+
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+
+
+      <div class="mb-3">
+        <label class="form-label">Amount (Ksh)</label>
+        <input type="number"
+               step="0.01"
+               name="amount"
+               class="form-control"
+               placeholder="e.g. 15000.00"
+               required>
+      </div>
+
+      <div class="mb-3">
+        <label class="form-label">Notes (optional)</label>
+        <textarea name="note"
+                  class="form-control"
+                  rows="2"
+                  placeholder="e.g. Rent for October, paid in cash"></textarea>
+      </div>
+
+      <!-- hidden field that will be filled from modal -->
+      <input type="hidden" name="password_confirm" id="password_confirm">
+
+      <!-- This button only opens the modal -->
+      <button class="btn btn-primary w-100 mt-3"
+              type="button"
+              id="open-password-modal-btn"
+              style="border-radius: 999px;">
+        💾 Save Payment
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- 🔐 Password confirmation MODAL - themed like the app -->
+<div class="modal fade" id="passwordConfirmModal" tabindex="-1" aria-labelledby="passwordConfirmLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content glass"
+         style="
+           border-radius: 18px;
+           background: rgba(15, 23, 42, 0.92);
+           backdrop-filter: blur(18px);
+           border: 1px solid rgba(148, 163, 184, 0.4);
+           box-shadow: 0 24px 60px rgba(0,0,0,0.6);
+         ">
+      <div class="modal-header border-0">
+        <div>
+          <h5 class="modal-title" id="passwordConfirmLabel">
+            Confirm Payment
+          </h5>
+          <small class="text-muted">
+            Enter your Rentana account password to authorize this payment.
+          </small>
+        </div>
+        <button type="button"
+                class="btn-close btn-close-white"
+                data-bs-dismiss="modal"
+                aria-label="Close"></button>
+      </div>
+
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="password_input_modal" class="form-label">Password</label>
+          <input type="password"
+                 class="form-control"
+                 id="password_input_modal"
+                 autocomplete="off"
+                 name="__no_browser_password__"
+                 placeholder="••••••••">
+        </div>
+        <div id="password-error-msg"
+             class="text-danger small"
+             style="display:none;">
+          Password is required to continue.
+        </div>
+
+        <div class="alert alert-info small mt-3 mb-0" style="background: rgba(56, 189, 248, 0.08); border-color: rgba(56, 189, 248, 0.3);">
+          🔒 Security check: this helps prevent accidental or unauthorized payments on your account.
+        </div>
+      </div>
+
+      <div class="modal-footer border-0 d-flex justify-content-between">
+        <button type="button"
+                class="btn btn-outline-secondary"
+                data-bs-dismiss="modal"
+                style="border-radius: 999px;">
+          Cancel
+        </button>
+        <button type="button"
+                class="btn btn-primary"
+                id="confirm-payment-btn"
+                style="border-radius: 999px;">
+          ✅ Confirm & Save
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      const openModalBtn   = document.getElementById("open-password-modal-btn");
+      const confirmBtn     = document.getElementById("confirm-payment-btn");
+      const modalInput     = document.getElementById("password_input_modal");
+      const hiddenPassword = document.getElementById("password_confirm");
+      const form           = document.getElementById("add-payment-form");
+      const errorMsg       = document.getElementById("password-error-msg");
+
+      // ✅ Use Bootstrap 5 modal (base.html should already load Bootstrap JS)
+      const passwordModal = new bootstrap.Modal(
+        document.getElementById("passwordConfirmModal")
+      );
+
+      // When user clicks "Save Payment" → open modal
+      openModalBtn.addEventListener("click", function () {
+        errorMsg.style.display = "none";
+        modalInput.value = "";
+        passwordModal.show();
+        setTimeout(() => modalInput.focus(), 200);
+      });
+
+      // Handle "Confirm & Save"
+      confirmBtn.addEventListener("click", function () {
+        const pwd = modalInput.value.trim();
+
+        if (!pwd) {
+          errorMsg.style.display = "block";
+          return;
+        }
+
+        // put into hidden input that backend reads
+        hiddenPassword.value = pwd;
+
+        // close modal
+        passwordModal.hide();
+
+        // submit the form
+        form.submit();
+      });
+
+      // Allow pressing Enter inside the input to confirm
+      modalInput.addEventListener("keyup", function (e) {
+        if (e.key === "Enter") {
+          confirmBtn.click();
+        }
+      });
+    });
+  </script>
+{% endblock %}

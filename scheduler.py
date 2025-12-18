@@ -3,29 +3,70 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import date
 import pytz
+import logging
+
 from rentme.models import auto_update_all_unpaid_rents
 from rentme.extensions import db
 
 # Kenya timezone (EAT)
-kenya_tz = pytz.timezone("Africa/Nairobi")
+KENYA_TZ = pytz.timezone("Africa/Nairobi")
 
-scheduler = BackgroundScheduler(timezone=kenya_tz)
+logger = logging.getLogger(__name__)
+
+# Scheduler is defined, but NEVER auto-started
+scheduler = BackgroundScheduler(timezone=KENYA_TZ)
+
 
 def monthly_rent_update():
-    """Job that auto-updates unpaid rent balances every month (Kenya time)."""
-    print(f"🏠 Running monthly rent update — {date.today()} [Kenya Time]")
+    """
+    Job that auto-updates unpaid rent balances.
+    SAFE to run via cron / CLI.
+    """
+    today = date.today()
+    logger.info("🏠 Running monthly rent update — %s [Kenya Time]", today)
+
     try:
         auto_update_all_unpaid_rents()
         db.session.commit()
-        print("✅ Rent balances updated successfully.")
-    except Exception as e:
-        print(f"❌ Error during rent update: {e}")
+        logger.info("✅ Rent balances updated successfully.")
+    except Exception:
+        logger.exception("❌ Error during rent update")
         db.session.rollback()
+        raise
+
+
+def configure_scheduler():
+    """
+    Configure scheduler jobs WITHOUT starting it.
+    (Never auto-start in production)
+    """
+    trigger = CronTrigger(
+        day=1,
+        hour=2,
+        minute=0,
+        timezone=KENYA_TZ,
+    )
+
+    scheduler.add_job(
+        func=monthly_rent_update,
+        trigger=trigger,
+        id="monthly_rent_update",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
 
 def start_scheduler():
-    """Start background scheduler (runs once per month)."""
-    # Runs every 1st day of the month at 2:00 AM (Kenya time)
-    trigger = CronTrigger(day=1, hour=2, minute=0, timezone=kenya_tz)
-    scheduler.add_job(monthly_rent_update, trigger)
+    """
+    Start scheduler explicitly.
+    USE ONLY in development or a dedicated worker.
+    NEVER call on app startup in production.
+    """
+    if scheduler.running:
+        logger.warning("Scheduler already running — skipping start.")
+        return
+
+    configure_scheduler()
     scheduler.start()
-    print("🕓 Scheduler started — updates unpaid rent every 1st of the month (Kenya time).")
+    logger.info("🕓 Scheduler started — monthly rent updates enabled.")

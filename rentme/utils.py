@@ -20,6 +20,11 @@ from typing import Optional
 
 from flask import current_app
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
+from typing import Optional
+from flask import current_app
+import logging
+
+
 
 log = logging.getLogger(__name__)
 
@@ -38,60 +43,76 @@ def _mask_secret(s: Optional[str], keep: int = 4) -> str:
 
 
 # ---------------------------------------------------------------------
-# Email sending (SMTP) - synchronous, basic
+# Email sending 
 # ---------------------------------------------------------------------
-def send_reset_email(to_email: str, token: str, subject: Optional[str] = None, body: Optional[str] = None) -> bool:
+def send_reset_email(
+    to_email: str,
+    token: str,
+    subject: Optional[str] = None,
+    body: Optional[str] = None
+) -> bool:
     """
-    Send a reset email to `to_email` with a link containing `token`.
-    Uses SMTP settings from current_app.config:
-      EMAIL_FROM, SMTP_SERVER, SMTP_PORT, SMTP_USERNAME, SMTP_PASSWORD, BASE_URL
+    Send password reset email using mail-api.dev with debug logs
+    """
 
-    Returns True on success, False on failure.
-    """
     if not current_app:
-        log.error("Flask current_app not available in send_reset_email")
+        log.error("Flask current_app not available")
         return False
 
+    api_key = current_app.config.get("MAIL_API_KEY")
+    email_from = current_app.config.get("EMAIL_FROM")
     base_url = current_app.config.get("BASE_URL", "").rstrip("/")
+
+    if not api_key or not email_from or not base_url:
+        log.error("Mail API configuration missing")
+        return False
+
     reset_link = f"{base_url}/reset_password/{token}"
 
-    if not subject:
-        subject = "Password Reset"
+    subject = subject or "Password Reset"
+    body = body or f"""Hello,
 
-    if not body:
-        body = f"Reset your password using this link: {reset_link}\nThis link will expire in 1 hour."
+You requested a password reset.
 
-    msg = MIMEText(body)
-    msg["Subject"] = subject
-    msg["From"] = current_app.config.get("EMAIL_FROM", "no-reply@example.com")
-    msg["To"] = to_email
+Click the link below to reset your password:
+{reset_link}
 
-    smtp_server = current_app.config.get("SMTP_SERVER")
-    smtp_port = int(current_app.config.get("SMTP_PORT", 587))
-    smtp_user = current_app.config.get("SMTP_USERNAME")
-    smtp_pass = current_app.config.get("SMTP_PASSWORD")
-    use_tls = current_app.config.get("SMTP_USE_TLS", True)
+This link expires in 1 hour.
 
-    if not smtp_server or not smtp_user or not smtp_pass:
-        log.warning("SMTP configuration missing. Skipping email send. SMTP_SERVER/SUPPORT missing.")
-        return False
+If you didn’t request this, ignore this email.
+
+— RentMe Team
+"""
 
     try:
-        server = smtplib.SMTP(smtp_server, smtp_port, timeout=15)
-        if use_tls:
-            server.starttls()
-        server.login(smtp_user, smtp_pass)
-        server.sendmail(msg["From"], [msg["To"]], msg.as_string())
-        try:
-            server.quit()
-        except Exception:
-            server.close()
-        log.info("Password reset email sent to %s", to_email)
-        return True
-    except Exception as e:
-        log.exception("Failed to send email to %s: %s", to_email, e)
+        response = requests.post(
+            "https://mail-api.dev/api/send",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "from": email_from,
+                "to": to_email,
+                "subject": subject,
+                "text": body,
+            },
+            timeout=10,
+        )
+
+        # DEBUG: print response for troubleshooting
+        print(f"[DEBUG] status_code: {response.status_code}, response_text: {response.text}")
+
+        if response.status_code in (200, 202):
+            log.info("Password reset email sent to %s", to_email)
+            return True
+
+        log.error("Mail API error %s: %s", response.status_code, response.text)
         return False
 
+    except Exception as e:
+        log.exception("Mail API exception: %s", e)
+        return False
 
 # ---------------------------------------------------------------------
 # Africa's Talking SMS (safe import inside function)
@@ -174,41 +195,46 @@ def send_sms_via_twilio(phone_number: str, message: str) -> bool:
 
 # ---------------------------------------------------------------------
 # Phone normalization
-# ---------------------------------------------------------------------
 def normalize_msisdn(phone: Optional[str]) -> str:
     """
-    Normalize Kenyan phone numbers to the canonical format '2547XXXXXXXX'.
-    Returns empty string for invalid/empty input.
+    Normalize Kenyan phone numbers to the canonical format: 2547XXXXXXXX
+    Returns empty string for invalid or non-Kenyan numbers.
     """
     if not phone:
         return ""
 
+    # Convert to string & strip
     s = str(phone).strip()
 
-    # Remove any non-digits and leading plus signs/spaces/hyphens
-    s = re.sub(r"[^\d]", "", s)
+    # Remove everything except digits
+    s = re.sub(r"\D", "", s)
 
-    # possible inputs: "0712345678", "712345678", "254712345678", " +254712345678"
+    # Handle common Kenyan formats
+    # 0712345678  -> 254712345678
     if s.startswith("0") and len(s) == 10:
         s = "254" + s[1:]
+
+    # 712345678 -> 254712345678
     elif s.startswith("7") and len(s) == 9:
         s = "254" + s
-    elif s.startswith("254") and (len(s) == 12 or len(s) == 13):
-        # already ok, truncate to 12 digits if needed
-        s = s[:12]
-    elif s.startswith("7") and len(s) > 9:
-        s = s[-9:]
-        s = "254" + s
+
+    # +254712345678 or 254712345678
+    elif s.startswith("254") and len(s) == 12:
+        pass  # already correct
+
+    # Long numbers containing Kenyan MSISDN (e.g. 00254712345678)
+    elif "2547" in s:
+        idx = s.find("2547")
+        s = s[idx:idx + 12]
+
     else:
-        # If it's short (e.g., 9 digits), still try to normalize
-        if len(s) == 9:
-            s = "254" + s
-        elif len(s) > 12 and s.startswith("254"):
-            s = s[:12]
+        return ""
 
-    # final guard: return only first 12 digits (2547XXXXXXXX)
-    return s[:12]
+    # Final strict validation
+    if not re.fullmatch(r"2547\d{8}", s):
+        return ""
 
+    return s
 
 # ---------------------------------------------------------------------
 # Token generation and verification (password reset)

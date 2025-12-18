@@ -1,0 +1,46 @@
+{% extends 'base.html' %}
+{% block title %}Settings · Rentana{% endblock %}
+
+{% block content %}
+<div class="glass" style="padding: 24px; margin: 32px;">
+  <h2 class="mb-4">Settings</h2>
+
+  <form method="POST" action="{{ url_for('settings') }}">
+    <div class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label">Landlord Name</label>
+        <input type="text" name="landlord_name" class="form-control"
+               value="{{ settings.landlord_name or '' }}" required>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Contact Email</label>
+        <input type="email" name="email" class="form-control"
+               value="{{ settings.email or '' }}" required>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Phone Number</label>
+        <input type="text" name="phone" class="form-control"
+               value="{{ settings.phone or '' }}">
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Default Monthly Rent (Ksh)</label>
+        <input type="number" name="default_rent" step="0.01" class="form-control"
+               value="{{ settings.default_rent or 0 }}">
+      </div>
+
+      <div class="col-md-12">
+        <label class="form-label">Notes / Message to Tenants</label>
+        <textarea name="notice_message" rows="3" class="form-control">{{ settings.notice_message or '' }}</textarea>
+      </div>
+    </div>
+
+    <div class="mt-4 d-flex gap-2">
+      <button type="submit" class="btn btn-primary">💾 Save Settings</button>
+      <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">← Back</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

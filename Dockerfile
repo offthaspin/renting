@@ -1,29 +1,36 @@
-# Use Debian bookworm slim with Python 3.13
-FROM python:3.13.4-slim-bookworm
+# Use stable Python (Render-friendly)
+FROM python:3.11-slim
 
-# Install REQUIRED system dependencies only
+# Prevent Python from buffering logs
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Install only REQUIRED system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3-dev build-essential \
-    libffi-dev libssl-dev \
-    libcairo2-dev pkg-config \
-    python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
-    libgirepository1.0-dev \
+    build-essential \
+    libpq-dev \
+    libffi-dev \
+    libssl-dev \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Set work directory
 WORKDIR /app
 
-# Copy requirements and install Python packages
+# Install Python deps first (better caching)
 COPY requirements.txt .
-RUN pip install --upgrade pip
-RUN pip install -r requirements.txt
+RUN pip install --upgrade pip \
+    && pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your app
+# Copy app source
 COPY . .
 
-# Expose default port for Render
+# Render exposes PORT automatically
 EXPOSE 10000
 
-# Start your app (adjust module if needed)
-CMD ["gunicorn", "rentme.app:app", "-b", "0.0.0.0:10000", "--workers", "3"]
+# Start app
+CMD gunicorn app:app \
+    --bind 0.0.0.0:${PORT:-10000} \
+    --workers ${WEB_CONCURRENCY:-1} \
+    --timeout 120

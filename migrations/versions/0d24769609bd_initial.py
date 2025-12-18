@@ -44,7 +44,9 @@ def upgrade():
                type_=sa.String(length=512),
                existing_nullable=True)
         batch_op.create_foreign_key(None, 'user', ['user_id'], ['id'])
-        batch_op.drop_column('transaction_number')
+        # batch_op.drop_column('transaction_number')  <-- remove or comment out
+
+    # ### end Alembic commands ###
 
     # ### end Alembic commands ###
 

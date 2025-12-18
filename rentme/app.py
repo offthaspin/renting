@@ -37,7 +37,6 @@ from rentme.config import Config
 from rentme.models import User, Tenant, Payment, AuditLog
 from rentme.mpesa_handler import mpesa_bp
 from rentme.landlord_settings import landlord_settings_bp
-from scheduler import start_scheduler
 from register_daraja_live import register_urls
 from rentme.forms import RegisterForm
 from rentme.forms import ForgotPasswordForm
@@ -50,6 +49,7 @@ from flask_wtf import CSRFProtect
 from sqlalchemy import or_
 from sqlalchemy import func
 from rentme.forms import ResetPasswordForm
+from flask_socketio import SocketIO
 
 # -----------------------
 # Load environment variables
@@ -61,7 +61,7 @@ load_dotenv()
 # -----------------------
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 APK_FOLDER = os.path.join(BASE_DIR, "static", "apk")
-DB_PATH = os.path.join(BASE_DIR, "rentana_full.db")
+
 
 # -----------------------
 # Create Flask app
@@ -70,18 +70,23 @@ app = Flask(__name__, static_folder="static", template_folder="templates")
 app.config.from_object(Config)
 
 # Redis connection (optional, for production rate limiting)
-r = redis.Redis(host='localhost', port=6379, db=0)
+REDIS_URL = os.getenv("REDIS_URL")
 
-# Correct Limiter setup
 limiter = Limiter(
-    app=app,  # must be keyword
+    app=app,
     key_func=get_remote_address,
-    storage_uri="redis://localhost:6379"
+    storage_uri=REDIS_URL if REDIS_URL else "memory://"
 )
+
 # -----------------------
 # Environment overrides
 # -----------------------
-app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "change-me-in-prod")
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY not set")
+
+app.config["SECRET_KEY"] = SECRET_KEY
+
 db_url = os.getenv("DATABASE_URL") 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -97,6 +102,12 @@ limiter.init_app(app)
 Migrate(app, db)
 
 csrf.exempt(mpesa_bp)
+
+
+socketio = SocketIO(app)
+
+
+
 
 # -----------------------
 # Login manager
@@ -147,35 +158,48 @@ app.register_blueprint(landlord_settings_bp, url_prefix="/settings")
 # -----------------------
 # Debug logger
 # -----------------------
-@app.before_request
-def log_request_info():
-    print("\n====== 📥 NEW REQUEST ======")
-    print(f"➡️ Path:   {request.path}")
-    print(f"➡️ Method: {request.method}")
-    try:
-        data = request.get_json(force=True, silent=True)
-        print(f"➡️ Body: {json.dumps(data, indent=2) if data else 'None'}")
-    except Exception as e:
-        print(f"⚠️ JSON parse error: {e}")
+# -----------------------
+# Development-only request logging
+# -----------------------
+if app.config.get("ENV") == "development":
+
+    @app.before_request
+    def log_request_info():
+        print("\n====== 📥 NEW REQUEST ======")
+        print(f"➡️ Path:   {request.path}")
+        print(f"➡️ Method: {request.method}")
+
+        try:
+            data = request.get_json(force=True, silent=True)
+            if data:
+                print(f"➡️ Body:\n{json.dumps(data, indent=2)}")
+            else:
+                print("➡️ Body: None")
+        except Exception as e:
+            print(f"⚠️ JSON parse error: {e}")
 
 # -----------------------
 # DB + Scheduler
 # -----------------------
-with app.app_context():
-    start_scheduler()
 
 # -----------------------
 # Audit helper
 # -----------------------
+# -----------------------
+# Audit helper (NON-BLOCKING)
+# -----------------------
 def audit(user, action, meta=""):
     try:
-        entry = AuditLog(user_id=(user.id if user else None),
-                         action=action, meta=str(meta))
+        entry = AuditLog(
+            user_id=(user.id if user else None),
+            action=action,
+            meta=str(meta),
+        )
         db.session.add(entry)
         db.session.commit()
     except Exception as e:
         db.session.rollback()
-        print(f"⚠️ Audit log failed: {e}")
+        app.logger.warning("Audit log failed: %s", e)
 
 # -----------------------
 # Decorators
@@ -373,7 +397,7 @@ def forgot_password():
 # -----------------------------------------------------
 # RESET PASSWORD
 # -----------------------------------------------------
-
+@limiter.limit("5/minute")
 @app.route("/reset-password", methods=["GET", "POST"])
 def reset_password():
     form = ResetPasswordForm()
@@ -686,6 +710,7 @@ def tenant_delete(tenant_id, _tenant_obj=None):
 
 
 # ---------- BULK DELETE ----------
+# -----------------------
 @app.route("/tenants/bulk-delete", methods=["POST"])
 @login_required
 def tenant_bulk_delete():
@@ -711,16 +736,31 @@ def tenant_bulk_delete():
     tenants = q.all()
     count = len(tenants)
 
-    for t in tenants:
-        db.session.delete(t)
+    if count == 0:
+        flash("No tenants found or permission denied.", "warning")
+        return redirect(url_for("tenant_list"))
 
-    db.session.commit()
+    try:
+        for tenant in tenants:
+            db.session.delete(tenant)
 
-    audit(current_user, "tenants_bulk_deleted", meta=f"ids:{','.join(ids)}")
+        db.session.commit()
+
+    except Exception as e:
+        db.session.rollback()
+        app.logger.exception("Bulk tenant delete failed")
+        flash("Bulk delete failed. No changes were made.", "danger")
+        return redirect(url_for("tenant_list"))
+
+    # Audit AFTER successful commit only
+    audit(
+        current_user,
+        "tenants_bulk_deleted",
+        meta=f"count={count}, ids={','.join(ids)}",
+    )
 
     flash(f"{count} tenant(s) deleted successfully.", "success")
     return redirect(url_for("tenant_list"))
-
 # -----------------------
 # Payments CRUD
 # -----------------------
@@ -957,57 +997,103 @@ def service_worker():
 # -----------------------
 # Context processors / errors / CLI
 # -----------------------
+
+from datetime import datetime, date
+import pytz
+
+# Explicit Kenya timezone
+TZ = pytz.timezone("Africa/Nairobi")
+
+
 @app.context_processor
 def inject_now():
-    return {"current_year": datetime.now().year, "today": date.today(), "date": date, "datetime": datetime}
+    now = datetime.now(TZ)
+    return {
+        "current_year": now.year,
+        "today": now.date(),
+        "date": date,
+        "datetime": datetime,
+    }
 
 
 @app.errorhandler(403)
 def forbidden(e):
     return render_template("error.html", code=403, message="Forbidden"), 403
 
+
 @app.errorhandler(404)
 def not_found(e):
     return render_template("error.html", code=404, message="Not Found"), 404
 
+
 @app.errorhandler(500)
 def server_error(e):
+    app.logger.exception("Internal Server Error", exc_info=e)
     return render_template("error.html", code=500, message="Server Error"), 500
 
 
-@app.cli.command("init-db")
-def init_db():
-    db.create_all()
-    print("Database initialized at:", DB_PATH)
-
+# -----------------------
+# CLI COMMANDS
+# -----------------------
 
 @app.cli.command("create-admin")
 def create_admin():
+    """Create an admin user (manual, production-safe)."""
     import getpass
+
     email = input("Admin email: ").strip().lower()
     if not email:
-        print("Email required.")
+        print("❌ Email required.")
         return
+
     if User.query.filter_by(email=email).first():
-        print("User exists.")
+        print("❌ User already exists.")
         return
+
     pwd = getpass.getpass("Password: ")
-    pwd2 = getpass.getpass("Confirm Password: ")
-    if pwd != pwd2:
-        print("Passwords do not match.")
+    pwd2 = getpass.getpass("Confirm password: ")
+
+    if not pwd or pwd != pwd2:
+        print("❌ Passwords do not match.")
         return
-    u = User(email=email, is_admin=True)
-    u.set_password(pwd)
-    db.session.add(u)
+
+    confirm = input("Type YES to confirm admin creation: ")
+    if confirm != "YES":
+        print("❌ Aborted.")
+        return
+
+    user = User(email=email, is_admin=True)
+    user.set_password(pwd)
+
+    db.session.add(user)
     db.session.commit()
-    print("Admin created.")
+
+    print("✅ Admin created successfully.")
+
+
+@app.cli.command("update-monthly-rent")
+def update_monthly_rent_cli():
+    """
+    Monthly rent update (CRON SAFE).
+    This replaces APScheduler completely.
+    """
+    from rentme.models import auto_update_all_unpaid_rents
+
+    with app.app_context():
+        try:
+            auto_update_all_unpaid_rents()
+            db.session.commit()
+            print("✅ Monthly rent balances updated successfully.")
+        except Exception as e:
+            db.session.rollback()
+            app.logger.exception("❌ Monthly rent update failed")
+            raise e
 
 
 # -----------------------
-# -------------------------------------
-# -------------------------------------
 # Compatibility / Aliases
-# -------------------------------------
+# -----------------------
+
 @app.route("/add_tenant")
 @login_required
 def add_tenant_alias():
@@ -1035,59 +1121,33 @@ def payment_edit_redirect():
     return redirect(url_for("payment_list"))
 
 
-# -------------------------------------
-# Database Initialization
-# -------------------------------------
-with app.app_context():
-    try:
-        db.create_all()
-        print("✅ Database initialized successfully.")
-    except Exception as e:
-        print("❌ Database initialization failed:", e)
-
-
-# -------------------------------------
+# -----------------------
 # Landlord Settings Import
-# -------------------------------------
+# -----------------------
+
 try:
     from rentme.landlord_settings import landlord_settings_bp
 except ImportError as e:
-    print(f"⚠️ Failed to import landlord_settings: {e}")
-
-# -------------------------------------
-# Monthly Rent Auto-Update (Kenya Time)
-# -------------------------------------
-from apscheduler.schedulers.background import BackgroundScheduler
-from datetime import datetime
-import pytz
-from rentme.models import Tenant
-
-def update_monthly_rent():
-    with app.app_context():
-        tenants = Tenant.query.all()
-        for tenant in tenants:
-            tenant.balance += tenant.rent_amount  # add unpaid rent to balance
-        db.session.commit()
-        print(f"[{datetime.now()}] ✅ Monthly rent balances updated successfully")
-
-# Run every 1st of each month at 00:00 (Kenya time)
-kenya_tz = pytz.timezone("Africa/Nairobi")
-scheduler = BackgroundScheduler(timezone=kenya_tz)
-scheduler.add_job(update_monthly_rent, "cron", day=1, hour=0, minute=0)
-scheduler.start()
-print("🕓 Scheduler started — updates unpaid rent every 1st of the month (Kenya time).")
+    app.logger.warning("Failed to import landlord_settings: %s", e)
 
 
-# -------------------------------------
-# Run App
-# -------------------------------------
+# -----------------------
+# Run App (LOCAL DEV ONLY)
+# -----------------------
+
 if __name__ == "__main__":
     import logging
+    import os
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
-        handlers=[logging.StreamHandler()]
+        handlers=[logging.StreamHandler()],
     )
-    logging.info("🚀 Rentana Flask app starting on port %s...", os.getenv("PORT", 5000))
+
+    logging.info(
+        "🚀 Rentana Flask app starting on port %s...",
+        os.getenv("PORT", 5000),
+    )
 
     socketio.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))

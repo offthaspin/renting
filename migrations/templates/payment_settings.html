@@ -1,0 +1,38 @@
+<!-- templates/payment_settings.html -->
+<form method="POST" action="{{ url_for('payments.save_settings') }}">
+  <label>Shortcode (Paybill/Till)</label>
+  <input name="shortcode" value="{{ mpcred.shortcode or '' }}" required />
+
+  <label>Shortcode Type</label>
+  <select name="shortcode_type">
+    <option value="paybill" {% if mpcred.shortcode_type=='paybill' %}selected{% endif %}>Paybill</option>
+    <option value="till" {% if mpcred.shortcode_type=='till' %}selected{% endif %}>Till</option>
+  </select>
+
+  <label>Consumer Key</label>
+  <input name="consumer_key" value="" placeholder="Enter consumer key" required />
+
+  <label>Consumer Secret</label>
+  <input name="consumer_secret" value="" placeholder="Enter consumer secret" required />
+
+  <label>Passkey (STK Push)</label>
+  <input name="passkey" value="" placeholder="Enter passkey" required />
+
+  <label>Callback URL</label>
+  <input name="callback_url" value="{{ mpcred.callback_url or default_callback }}" required />
+
+  <label>Environment</label>
+  <select name="mpesa_env">
+    <option value="sandbox" {% if mpcred.mpesa_env=='sandbox' %}selected{% endif %}>Sandbox</option>
+    <option value="production" {% if mpcred.mpesa_env=='production' %}selected{% endif %}>Production</option>
+  </select>
+
+  <label>Payment method</label>
+  <select name="payment_method">
+    <option value="stk">STK Push</option>
+    <option value="paybill">Paybill (C2B)</option>
+    <option value="sendmoney">SendMoney (Manual)</option>
+  </select>
+
+  <button type="submit">Save</button>
+</form>
