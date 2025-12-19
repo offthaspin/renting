@@ -1,44 +1,87 @@
 # scheduler.py
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from datetime import date
+from datetime import date, datetime
+from sqlalchemy.exc import IntegrityError
+from rentme.models import JobLock
 import pytz
 import logging
 
 from rentme.models import auto_update_all_unpaid_rents
 from rentme.extensions import db
 
-# Kenya timezone (EAT)
+# --------------------------------------------------
+# Timezone
+# --------------------------------------------------
 KENYA_TZ = pytz.timezone("Africa/Nairobi")
 
-logger = logging.getLogger(__name__)
+# --------------------------------------------------
+# Logger
+# --------------------------------------------------
+logger = logging.getLogger("rentme.scheduler")
+logger.setLevel(logging.INFO)
 
-# Scheduler is defined, but NEVER auto-started
+# --------------------------------------------------
+# Scheduler (DEFINED ONLY — NEVER AUTO-START)
+# --------------------------------------------------
 scheduler = BackgroundScheduler(timezone=KENYA_TZ)
 
 
 def monthly_rent_update():
     """
-    Job that auto-updates unpaid rent balances.
-    SAFE to run via cron / CLI.
+    DB-LOCKED monthly rent updater.
+    GUARANTEED to run only once per month.
     """
     today = date.today()
-    logger.info("🏠 Running monthly rent update — %s [Kenya Time]", today)
+    job_name = "monthly_rent_update"
+
+    logger.info("🔐 Attempting DB lock for monthly rent update")
 
     try:
-        auto_update_all_unpaid_rents()
+        # Try to acquire lock
+        lock = JobLock.query.filter_by(job_name=job_name).with_for_update().first()
+
+        if not lock:
+            lock = JobLock(job_name=job_name)
+            db.session.add(lock)
+            db.session.flush()
+
+        # If already run this month → EXIT
+        if lock.last_run == today.replace(day=1):
+            logger.info("⏭ Monthly rent already updated — skipping")
+            return
+
+        # Lock job
+        lock.locked_at = datetime.utcnow()
         db.session.commit()
-        logger.info("✅ Rent balances updated successfully.")
-    except Exception:
-        logger.exception("❌ Error during rent update")
+
+        logger.info("🔓 Lock acquired — running rent update")
+
+        # --- ACTUAL JOB ---
+        auto_update_all_unpaid_rents()
+
+        # Mark success
+        lock.last_run = today.replace(day=1)
+        lock.locked_at = None
+
+        db.session.commit()
+
+        logger.info("✅ Monthly rent update completed and locked")
+
+    except IntegrityError:
         db.session.rollback()
+        logger.warning("⚠️ Another worker acquired the lock first — exiting")
+
+    except Exception:
+        db.session.rollback()
+        logger.exception("❌ Monthly rent update failed")
         raise
 
 
 def configure_scheduler():
     """
-    Configure scheduler jobs WITHOUT starting it.
-    (Never auto-start in production)
+    Register scheduler jobs ONLY.
+    Does NOT start the scheduler.
     """
     trigger = CronTrigger(
         day=1,
@@ -54,19 +97,24 @@ def configure_scheduler():
         replace_existing=True,
         max_instances=1,
         coalesce=True,
+        misfire_grace_time=3600,  # 1 hour safety window
     )
+
+    logger.info("📅 Scheduler jobs configured (not started)")
 
 
 def start_scheduler():
     """
     Start scheduler explicitly.
-    USE ONLY in development or a dedicated worker.
-    NEVER call on app startup in production.
+    USE ONLY IN:
+    - Background worker
+    - Local development
+    NEVER from Flask app startup.
     """
     if scheduler.running:
-        logger.warning("Scheduler already running — skipping start.")
+        logger.warning("⚠️ Scheduler already running — start skipped")
         return
 
     configure_scheduler()
     scheduler.start()
-    logger.info("🕓 Scheduler started — monthly rent updates enabled.")
+    logger.info("🕓 Scheduler started — monthly rent updates ACTIVE")

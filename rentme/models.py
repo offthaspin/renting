@@ -7,6 +7,18 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import Column, DateTime
 from rentme.extensions import db 
 
+
+class JobLock(db.Model):
+    __tablename__ = "job_locks"
+
+    id = db.Column(db.Integer, primary_key=True)
+    job_name = db.Column(db.String(100), unique=True, nullable=False)
+    last_run = db.Column(db.Date, nullable=True)
+    locked_at = db.Column(db.DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<JobLock {self.job_name}>"
+
 class MpesaCredential(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)

@@ -49,7 +49,7 @@ from flask_wtf import CSRFProtect
 from sqlalchemy import or_
 from sqlalchemy import func
 from rentme.forms import ResetPasswordForm
-from flask_socketio import SocketIO
+
 
 # -----------------------
 # Load environment variables
@@ -67,6 +67,11 @@ APK_FOLDER = os.path.join(BASE_DIR, "static", "apk")
 # Create Flask app
 # -----------------------
 app = Flask(__name__, static_folder="static", template_folder="templates")
+from rentme.routes import *
+
+if __name__ == "__main__":
+    app.run(debug=True)
+    
 app.config.from_object(Config)
 
 # Redis connection (optional, for production rate limiting)
@@ -102,11 +107,6 @@ limiter.init_app(app)
 Migrate(app, db)
 
 csrf.exempt(mpesa_bp)
-
-
-socketio = SocketIO(app)
-
-
 
 
 # -----------------------
@@ -1090,6 +1090,7 @@ def update_monthly_rent_cli():
             raise e
 
 
+
 # -----------------------
 # Compatibility / Aliases
 # -----------------------
@@ -1134,8 +1135,6 @@ except ImportError as e:
 # -----------------------
 # Run App (LOCAL DEV ONLY)
 # -----------------------
-
-if __name__ == "__main__":
     import logging
     import os
 
@@ -1150,4 +1149,4 @@ if __name__ == "__main__":
         os.getenv("PORT", 5000),
     )
 
-    socketio.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 5000)))
+    
