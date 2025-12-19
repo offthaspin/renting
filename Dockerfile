@@ -33,9 +33,9 @@ EXPOSE 10000
 # Add rentme to PYTHONPATH so we can import app directly
 ENV PYTHONPATH=/app/rentme
 
-# Start app using Gunicorn (standard Flask)
-CMD ["gunicorn", "app:app", \
-     "--bind", "0.0.0.0:${PORT:-10000}", \
-     "--workers", "2", \
-     "--timeout", "120", \
-     "--log-level", "info"]
+# Start app using Gunicorn (shell form, allows env var expansion)
+CMD gunicorn app:app \
+    --bind 0.0.0.0:${PORT:-10000} \
+    --workers 2 \
+    --timeout 120 \
+    --log-level info
